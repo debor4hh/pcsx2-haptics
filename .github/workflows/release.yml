@@ -1,0 +1,71 @@
+# Builds the mod and Intiface Engine, then publishes the release zip.
+# Runs when a version tag is pushed (git tag v1.0.0 && git push origin v1.0.0),
+# or by hand from the Actions tab (then the zip is only kept as a build artifact).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  ENGINE_VERSION: "5.0.5" # intiface-engine crate version bundled in the zip
+
+jobs:
+  mod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+      - run: sh build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mod
+          path: dist/
+
+  engine:
+    runs-on: windows-latest # MSVC and CMake are preinstalled
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: engine
+          key: intiface-engine-${{ env.ENGINE_VERSION }}
+      - name: Build intiface-engine
+        shell: bash
+        run: |
+          if [ ! -f engine/bin/intiface-engine.exe ]; then
+            cargo install intiface-engine --version "$ENGINE_VERSION" --locked --root engine
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine
+          path: engine/bin/intiface-engine.exe
+
+  package:
+    needs: [mod, engine]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the GitHub release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+      - name: Assemble zip
+        run: |
+          name="PCSX2-Haptics-${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || name="PCSX2-Haptics-dev"
+          mkdir -p "pkg/licenses"
+          cp mod/version.dll mod/pcsx2-haptics.ini pkg/
+          cp engine/intiface-engine.exe pkg/
+          cp licenses/intiface-engine-LICENSE.txt pkg/licenses/
+          cp LICENSE pkg/licenses/pcsx2-haptics-LICENSE.txt
+          (cd pkg && zip -r "../$name.zip" .)
+          echo "ZIP=$name.zip" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-zip
+          path: ${{ env.ZIP }}
+      - if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+          generate_release_notes: true
